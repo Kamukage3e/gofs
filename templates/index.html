@@ -1,0 +1,1801 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://stackpath.bootstrapcdn.com https://cdnjs.cloudflare.com; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' https://cdnjs.cloudflare.com;">
+    <meta http-equiv="X-Frame-Options" content="DENY">
+    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+    <meta http-equiv="Strict-Transport-Security" content="max-age=31536000; includeSubDomains">
+    <meta name="referrer" content="same-origin">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Go File Manager</title>
+
+    <!-- Sanitize input values -->
+    <script>
+        function sanitizeInput(input) {
+            return input.replace(/[&<>"']/g, function (match) {
+                const escape = {
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#39;'
+                };
+                return escape[match];
+            });
+        }
+
+        function validateFileName(fileName) {
+            // Restrict file names to alphanumeric, dash, underscore, and dot
+            return /^[a-zA-Z0-9\-_\.]+$/.test(fileName);
+        }
+
+        function validatePath(path) {
+            // Prevent directory traversal attempts
+            return !path.includes('../') && !path.includes('..\\');
+        }
+    </script>
+
+    <!-- Existing CSS links with integrity checks -->
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet"
+        integrity="sha384-JcKb8q3iqJ61gNV9KGb8thSsNjpSL0n8PARn9HuZOnIxN0hoP+VmmDGMN5t9UJ0Z" crossorigin="anonymous">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet"
+        integrity="sha512-1ycn6IcaQQ40/MKBW2W4Rhis/DbILU74C1vSrLJxCq57o941Ym01SwNsOMqvEBFlcgUa6xLiPY/NS5R+E6ztJQ=="
+        crossorigin="anonymous">
+    <link href="{{.PrefixPath}}/static/style.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/video.js/8.19.1/video-js.min.css" rel="stylesheet">
+    <!-- Video.js JavaScript -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/video.js/8.19.1/video.min.js"></script>
+</head>
+
+<body>
+    <!-- Add CSRF token -->
+    <input type="hidden" id="csrfToken" value="{{.CSRFToken}}">
+    <input type="hidden" id="currentDirectory" value="{{.Dir}}">
+    <input type="hidden" id="prefixPath" value="{{.PrefixPath}}">
+    <div class="d-flex">
+        <div class="container-fluid p-4" id="main-content">
+            <h1 class="mb-4">File Manager</h1>
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item">
+                        <a href="#" class="home-link">Home</a>
+                    </li>
+                    <li class="breadcrumb-item active" aria-current="page">Current Directory</li>
+                </ol>
+            </nav>
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <!-- Search form -->
+                <form action="{{.PrefixPath}}/" method="get" class="form-inline d-flex">
+                    <input type="hidden" name="dir" value="{{.Dir}}">
+                    <input type="text" name="search" value="{{.Query}}" placeholder="Search files..."
+                        class="form-control mr-2" id="searchInput">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-search"></i> Search
+                    </button>
+                </form>
+
+                <!-- Upload and Create Folder forms -->
+                <div class="d-flex">
+                    <form id="uploadForm" class="d-flex align-items-center mr-2">
+                        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                        <input type="file" name="uploadfiles" id="uploadFile" class="d-none" multiple>
+                        <label for="uploadFile" class="btn btn-outline-secondary mb-0 mr-2">Choose files</label>
+                        <button type="submit" class="btn btn-success">
+                            <i class="fas fa-upload"></i> Upload
+                        </button>
+                        <input type="hidden" name="dir" value="{{if eq .Dir .WorkDir}}.{{else}}{{.Dir}}{{end}}">
+                    </form>
+
+                    <form id="createForm" class="d-flex align-items-center">
+                        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                        <input type="hidden" name="dir" value="{{.Dir}}">
+                        <input type="text" name="name" placeholder="Folder name" class="form-control mr-2">
+                        <button type="submit" class="btn btn-info">
+                            <i class="fas fa-folder-plus"></i>
+                        </button>
+                    </form>
+                </div>
+            </div>
+            <div class="action-bar mb-3">
+                <!-- Search and filters group -->
+                <div class="filters-container">
+                    <div class="filters-group">
+                        <select id="extensionFilter" class="form-control">
+                            <option value="">All Extensions</option>
+                            <option value="folder">Folders</option>
+                            <option value="mp4">MP4</option>
+                            <option value="jpg">JPG</option>
+                            <option value="png">PNG</option>
+                            <option value="txt">TXT</option>
+                        </select>
+                        <select id="dateFilter" class="form-control">
+                            <option value="">All Dates</option>
+                            <option value="today">Today</option>
+                            <option value="yesterday">Yesterday</option>
+                            <option value="week">Last Week</option>
+                            <option value="month">Last Month</option>
+                        </select>
+                        <select id="itemsPerPage" class="form-control">
+                            <option value="10">10 per page</option>
+                            <option value="25">25 per page</option>
+                            <option value="50">50 per page</option>
+                            <option value="100">100 per page</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- File stats -->
+                <div class="file-stats">
+                    <span class="badge badge-primary" id="totalFiles">Files: 0</span>
+                    <span class="badge badge-info" id="totalFolders">Folders: 0</span>
+                    <span class="badge badge-secondary" id="totalSize">Total Size: 0 B</span>
+                </div>
+            </div>
+
+            <!-- Action buttons group -->
+            <div class="action-buttons mb-3">
+                <div class="btn-group">
+                    <button type="button" class="btn btn-primary action-btn" id="downloadBtn">
+                        <i class="fas fa-download"></i> Download
+                    </button>
+                    <button type="button" class="btn btn-danger action-btn" id="deleteBtn">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
+                    <!-- <button type="button" class="btn btn-warning action-btn" id="editBtn">
+                        <i class="fas fa-edit"></i> Edit
+                    </button> -->
+                    <button type="button" class="btn btn-info action-btn" id="copyLinkBtn">
+                        <i class="fas fa-link"></i> Copy
+                    </button>
+                    <div class="chmod-group">
+                        <input type="text" id="chmodMode" placeholder="0755" class="form-control">
+                        <button type="button" class="btn btn-dark action-btn" id="chmodBtn">
+                            <i class="fas fa-key"></i> Chmod
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <table class="table table-hover" id="fileTable">
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" id="selectAll"></th>
+                        <th>Name</th>
+                        <th>Tags</th>
+                        <th>Description</th>
+                        <th>Format</th>
+                        <th>Extension</th>
+                        <th>Last Modified</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Files}}
+                    <tr draggable="true" ondragstart="drag(event)" ondrop="drop(event)" ondragover="allowDrop(event)"
+                        data-size="{{.Size}}">
+                        <td><input type="checkbox" class="fileCheckbox" value="{{.Name}}"></td>
+                        <td>
+                            {{if .IsDir}}
+                            <a href="#" class="folder-link" data-path="{{if eq $.Dir "."}}{{.Name}}{{else}}{{$.Dir}}/{{.Name}}{{end}}">
+                                <i class="fas fa-folder"></i> {{.Name}}/
+                            </a>
+                            {{else if eq (fileExt .Name) "mp4"}}
+                            <a href="#" class="media-link" 
+                               data-media-src="{{if eq $.Dir "."}}{{.Name}}{{else}}{{$.Dir}}/{{.Name}}{{end}}" 
+                               data-media-type="video">
+                                <i class="fas fa-video"></i> {{.Name}}
+                            </a>
+                            {{else if or (eq (fileExt .Name) "jpg") (eq (fileExt .Name) "png")}}
+                            <a href="#" class="media-link" 
+                               data-media-src="{{if eq $.Dir "."}}{{.Name}}{{else}}{{$.Dir}}/{{.Name}}{{end}}" 
+                               data-media-type="image">
+                                <i class="fas fa-image"></i> {{.Name}}
+                            </a>
+                            {{else}}
+                            <i class="fas fa-file"></i> {{.Name}}
+                            {{end}}
+                        </td>
+                        <td>Example Tag</td>
+                        <td>Example Description</td>
+                        <td>Text</td>
+                        <td>{{if .IsDir}}folder{{else}}{{.Name | fileExt}}{{end}}</td>
+                        <td>{{.ModTime.Format "2006-01-02 15:04:05"}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            <div class="d-flex justify-content-between align-items-center mt-3">
+                <div class="pagination-info">
+                    Showing <span id="startItem">1</span> to <span id="endItem">10</span> of <span
+                        id="totalItems">0</span> items
+                </div>
+                <nav aria-label="Page navigation">
+                    <ul class="pagination">
+                        <li class="page-item">
+                            <a class="page-link" href="#" id="prevPage">Previous</a>
+                        </li>
+                        <li class="page-item">
+                            <span class="page-link" id="currentPage">1</span>
+                        </li>
+                        <li class="page-item">
+                            <a class="page-link" href="#" id="nextPage">Next</a>
+                        </li>
+                    </ul>
+                </nav>
+            </div>
+            {{if ne .Dir "."}}
+            <a href="#" class="btn btn-secondary mt-3 back-button" data-path="{{.Dir | parentDir}}">
+                <i class="fas fa-arrow-left"></i>
+            </a>
+            {{end}}
+        </div>
+    </div>
+    <div id="mediaModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <div id="mediaContainer">
+                <div id="videoContainer" style="display:none;">
+                    <video id="videoPreview" class="video-js vjs-default-skin" controls preload="auto" width="100%" height="100%">
+                        <source id="videoSource" type="video/mp4">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>
+                <img id="imagePreview" style="display:none;" />
+            </div>
+        </div>
+    </div>
+    <script>
+        // Loading overlay functions
+        function showLoading(message = 'Processing...') {
+            const overlay = document.querySelector('.loading-overlay');
+            const loadingText = overlay.querySelector('.loading-text');
+            loadingText.textContent = message;
+            overlay.style.display = 'flex';
+        }
+
+        function hideLoading() {
+            const overlay = document.querySelector('.loading-overlay');
+            overlay.style.display = 'none';
+        }
+
+        // Get CSRF token once when the page loads
+        const csrfToken = document.getElementById('csrfToken').value;
+
+        // Add prefix path helper function
+        function getFullPath(path) {
+            const prefix = document.getElementById('prefixPath').value || '';
+            // Remove any leading slash and clean the path
+            const cleanPath = path.replace(/^\/+/, '').replace(/\/+/g, '/');
+            // Remove any duplicate prefix
+            const cleanPrefix = prefix.replace(/^\/+/, '').replace(/\/+/g, '/');
+            return '/' + (cleanPrefix ? cleanPrefix + '/' : '') + cleanPath;
+        }
+
+        // Helper function for secure fetch with CSRF token
+        async function secureFetch(url, options = {}) {
+            const prefix = document.getElementById('prefixPath').value || '';
+            const fullUrl = prefix + url;
+
+            const defaultHeaders = {
+                'X-CSRF-Token': document.getElementById('csrfToken').value,
+                'X-Requested-With': 'XMLHttpRequest'
+            };
+
+            if (!(options.body instanceof FormData)) {
+                defaultHeaders['Content-Type'] = 'application/json';
+            }
+
+            const secureOptions = {
+                ...options,
+                headers: {
+                    ...defaultHeaders,
+                    ...options.headers
+                },
+                credentials: 'same-origin'
+            };
+
+            try {
+                const response = await fetch(fullUrl, secureOptions);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response;
+            } catch (error) {
+                console.error('Fetch error:', error);
+                throw error;
+            }
+        }
+
+        // Move this outside of the DOMContentLoaded event listener
+        function handleFolderClick(event) {
+            event.preventDefault();
+            const path = this.getAttribute('data-path');
+            const prefix = document.getElementById('prefixPath').value || '';
+
+            console.log('Folder navigation:', {
+                path: path,
+                prefix: prefix
+            });
+
+            // Remove any duplicate prefix paths
+            const cleanPrefix = prefix.replace(/\/+/g, '/');
+            const cleanPath = path.replace(/\/+/g, '/');
+
+            // Construct the URL properly
+            const url = cleanPrefix + '/?dir=' + encodeURIComponent(cleanPath);
+            console.log('Navigation URL:', url);
+            window.location.href = url;
+        }
+
+        // Add folder click handlers
+        document.querySelectorAll('.folder-link').forEach(link => {
+            link.addEventListener('click', handleFolderClick);
+        });
+
+        document.addEventListener('DOMContentLoaded', function () {
+            // Add security headers to all fetch requests
+            const defaultHeaders = {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': csrfToken,
+                'X-Requested-With': 'XMLHttpRequest'
+            };
+
+            // Secure fetch wrapper
+            async function secureFetch(url, options = {}) {
+                const fullUrl = getFullPath(url);
+                const secureOptions = {
+                    ...options,
+                    headers: {
+                        ...defaultHeaders,
+                        ...options.headers
+                    },
+                    credentials: 'same-origin'
+                };
+
+                try {
+                    const response = await fetch(fullUrl, secureOptions);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response;
+                } catch (error) {
+                    console.error('Fetch error:', error);
+                    throw error;
+                }
+            }
+
+            // Secure file upload
+            const uploadForm = document.getElementById('uploadForm');
+            if (uploadForm) {
+                uploadForm.addEventListener('submit', async function (event) {
+                    event.preventDefault();
+                    showLoading('Uploading files...');
+                    const formData = new FormData(this);
+
+                    try {
+                        const response = await secureFetch('/upload', {
+                            method: 'POST',
+                            body: formData,
+                            headers: {
+                                'X-CSRF-Token': csrfToken
+                            }
+                        });
+
+                        if (!response.ok) {
+                            throw new Error(await response.text());
+                        }
+
+                        location.reload();
+                    } catch (error) {
+                        console.error('Upload failed:', error);
+                        alert('Upload failed: ' + error.message);
+                        // Reset the label on error
+                        uploadLabel.innerHTML = originalLabelText;
+                        uploadLabel.classList.remove('btn-success');
+                        uploadLabel.classList.add('btn-outline-secondary');
+                    } finally {
+                        hideLoading();
+                    }
+                });
+            }
+
+            // File type validation
+            function validateFileType(file) {
+                const allowedTypes = [
+                    'image/jpeg', 'image/png', 'image/gif',
+                    'video/mp4', 'video/webm',
+                    'text/plain', 'text/html', 'text/css',
+                    'application/pdf', 'application/json'
+                ];
+                return allowedTypes.includes(file.type);
+            }
+
+            function initVideoPlayer(mediaUrl) {
+                try {
+                    // Create a new video element
+                    const videoElement = document.createElement('video');
+                    videoElement.className = 'video-js vjs-default-skin vjs-big-play-button vjs-fluid';
+                    videoElement.id = 'videoPreview';
+
+                    // Clear and append the new video element
+                    const videoContainer = document.getElementById("videoContainer");
+                    videoContainer.innerHTML = '';
+                    videoContainer.appendChild(videoElement);
+
+                    // Initialize the player with specific options
+                    window.videoPlayer = videojs('videoPreview', {
+                        controls: true,
+                        autoplay: false,
+                        preload: 'metadata',
+                        fluid: true,
+                        width: '100%',
+                        height: '100%',
+                        playbackRates: [0.5, 1, 1.5, 2],
+                        html5: {
+                            nativeTextTracks: false,
+                            nativeAudioTracks: false,
+                            nativeVideoTracks: false,
+                            hls: {
+                                overrideNative: true
+                            }
+                        }
+                    });
+
+                    // Track XHR requests
+                    window.videoPlayer.ready(function () {
+                        this.on('loadstart', function () {
+                            const tech = this.tech_;
+                            if (tech) {
+                                const xhr = tech.xhr;
+                                if (xhr) {
+                                    window.videoXHR = xhr;
+                                }
+                            }
+                        });
+
+                        // Set source after player is ready
+                        this.src({
+                            type: 'video/mp4',
+                            src: mediaUrl
+                        });
+                    });
+
+                    // Add error handling
+                    window.videoPlayer.on('error', function (e) {
+                        console.error('Video error:', this.error());
+                    });
+
+                } catch (error) {
+                    console.error('Video setup error:', error);
+                    alert('Error setting up video player: ' + error.message);
+                }
+            }
+            // File size validation (e.g., 100MB limit)
+            function validateFileSize(file) {
+                const maxSize = 100 * 1024 * 1024; // 100MB
+                return file.size <= maxSize;
+            }
+
+            // Secure folder creation
+            const createForm = document.getElementById('createForm');
+            if (createForm) {
+                createForm.addEventListener('submit', async function (event) {
+                    event.preventDefault();
+                    const formData = new FormData(this);
+                    const folderName = formData.get('name');
+
+                    if (!validateFileName(folderName)) {
+                        alert('Invalid folder name. Use only letters, numbers, dash, underscore, and dot.');
+                        return;
+                    }
+
+                    showLoading('Creating folder...');
+                    try {
+                        await secureFetch('/create', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                dir: formData.get('dir'),
+                                name: folderName,
+                                type: "directory"
+                            })
+                        });
+                        location.reload();
+                    } catch (error) {
+                        alert('Failed to create folder: ' + error.message);
+                    } finally {
+                        hideLoading();
+                    }
+                });
+            }
+
+            // Download handler
+            const downloadBtn = document.getElementById('downloadBtn');
+            if (downloadBtn) {
+                downloadBtn.addEventListener('click', async function (event) {
+                    var selectedFiles = document.querySelectorAll('.fileCheckbox:checked');
+                    if (selectedFiles.length === 0) {
+                        alert('Please select at least one file to download.');
+                        return;
+                    }
+
+                    showLoading(selectedFiles.length > 1 ? 'Preparing download...' : 'Downloading file...');
+                    try {
+                        if (selectedFiles.length === 1) {
+                            var selectedFileName = selectedFiles[0].value;
+                            var currentDir = document.getElementById('currentDirectory').value;
+
+                            const response = await secureFetch('/download', {
+                                method: 'POST',
+                                body: JSON.stringify({
+                                    file: selectedFileName,
+                                    dir: currentDir
+                                })
+                            });
+                            
+                            const blob = await response.blob();
+                            const url = window.URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = selectedFileName;
+                            document.body.appendChild(a);
+                            a.click();
+                            a.remove();
+                            window.URL.revokeObjectURL(url);
+                        } else {
+                            // Multiple files download (compression)
+                            var selectedFileNames = Array.from(selectedFiles).map(checkbox => checkbox.value);
+                            var currentDir = document.getElementById('currentDirectory').value;
+
+                            const response = await secureFetch('/compress', {
+                                method: 'POST',
+                                body: JSON.stringify({
+                                    files: selectedFileNames,
+                                    output: 'download.zip',
+                                    dir: currentDir
+                                })
+                            });
+                            
+                            const blob = await response.blob();
+                            const url = window.URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = 'download.zip';
+                            document.body.appendChild(a);
+                            a.click();
+                            a.remove();
+                            window.URL.revokeObjectURL(url);
+                        }
+                    } catch (error) {
+                        console.error('Download failed:', error);
+                        alert('Download failed: ' + error.message);
+                    } finally {
+                        hideLoading();
+                    }
+                });
+            }
+
+            // Delete handler
+            const deleteBtn = document.getElementById('deleteBtn');
+            if (deleteBtn) {
+                deleteBtn.addEventListener('click', async function (event) {
+                    event.preventDefault();
+                    var selectedFiles = document.querySelectorAll('.fileCheckbox:checked');
+                    if (selectedFiles.length === 0) {
+                        alert('Please select at least one file to delete.');
+                        return;
+                    }
+
+                    if (confirm('Are you sure you want to delete the selected files?')) {
+                        showLoading('Deleting files...');
+                        try {
+                            var currentDir = document.getElementById('currentDirectory').value;
+                            var selectedFileNames = Array.from(selectedFiles).map(function (checkbox) {
+                                return checkbox.value;
+                            });
+
+                            const response = await secureFetch('/delete', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    files: selectedFileNames,
+                                    dir: currentDir
+                                })
+                            });
+
+                            if (response.ok) {
+                                location.reload();
+                            } else {
+                                const text = await response.text();
+                                throw new Error(text);
+                            }
+                        } catch (error) {
+                            console.error('Delete failed:', error);
+                            alert('Delete failed: ' + error.message);
+                        } finally {
+                            hideLoading();
+                        }
+                    }
+                });
+            }
+
+            const editBtn = document.getElementById('editBtn');
+            if (editBtn) {
+                editBtn.addEventListener('click', function (event) {
+                    var selectedFiles = document.querySelectorAll('.fileCheckbox:checked');
+                    if (selectedFiles.length !== 1) {
+                        event.preventDefault();
+                        alert('Please select a single file to edit.');
+                    } else {
+                        var selectedFileName = selectedFiles[0].value;
+                        document.getElementById('editFile').value = selectedFileName;
+                        window.location.href = '/edit?file=' + encodeURIComponent(selectedFileName);
+                    }
+                });
+            }
+
+            const copyLinkBtn = document.getElementById('copyLinkBtn');
+            if (copyLinkBtn) {
+                copyLinkBtn.addEventListener('click', function (event) {
+                    const selectedFiles = document.querySelectorAll('.fileCheckbox:checked');
+                    if (selectedFiles.length !== 1) {
+                        alert('Please select a single file to copy.');
+                        return;
+                    }
+
+                    const selectedFile = selectedFiles[0].value;
+                    const destination = prompt("Enter the destination folder name:");
+
+                    if (!destination) {
+                        return;
+                    }
+
+                    secureFetch('/copy', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            src: selectedFile,
+                            dst: destination
+                        })
+                    })
+                        .then(response => response.json())
+                        .then(data => {
+                            console.log('Copy successful:', data);
+                            location.reload();
+                        })
+                        .catch(error => {
+                            console.error('Copy failed:', error);
+                            alert('Failed to copy file: ' + error.message);
+                        });
+                });
+            }
+
+            // Media preview handler
+            document.querySelectorAll('.media-link').forEach(function (element) {
+                element.addEventListener('click', function (event) {
+                    event.preventDefault();
+                    console.log('Media link clicked');
+                    const mediaSrc = this.getAttribute('data-media-src');
+                    const mediaType = this.getAttribute('data-media-type');
+                    const prefix = document.getElementById('prefixPath').value || '';
+                    const prefixWithoutSlashes = prefix.replace(/^\/+|\/+$/g, '');
+                    
+                    // Remove any leading/trailing slashes and the prefix if it exists
+                    const cleanMediaSrc = mediaSrc.replace(/^\/+|\/+$/g, '').replace(new RegExp(`^${prefixWithoutSlashes}\/`), '');
+                    
+                    // Construct the media URL properly
+                    const mediaUrl = `${prefix}/media/${cleanMediaSrc}`;
+                    console.log('Media preview:', { mediaSrc, cleanMediaSrc, mediaUrl, mediaType, prefix });
+
+                    const modal = document.getElementById("mediaModal");
+                    const videoContainer = document.getElementById("videoContainer");
+                    const imagePreview = document.getElementById("imagePreview");
+
+                    // Reset media elements
+                    if (window.videoPlayer) {
+                        window.videoPlayer.dispose();
+                        window.videoPlayer = null;
+                    }
+                    if (imagePreview) {
+                        imagePreview.src = '';
+                    }
+
+                    if (mediaType === 'video') {
+                        modal.style.display = "block";
+                        videoContainer.style.display = "block";
+                        imagePreview.style.display = "none";
+                        initVideoPlayer(mediaUrl);
+                    } else if (mediaType === 'image') {
+                        modal.style.display = "block";
+                        videoContainer.style.display = "none";
+                        imagePreview.style.display = "block";
+                        imagePreview.src = mediaUrl;
+                    }
+                });
+            });
+
+            // Update modal close handlers with improved cleanup
+            function cleanupVideoPlayer() {
+                if (window.videoPlayer) {
+                    try {
+                        // Abort any ongoing video requests
+                        if (window.videoXHR) {
+                            window.videoXHR.abort();
+                            window.videoXHR = null;
+                        }
+
+                        // Stop video loading and playback
+                        window.videoPlayer.pause();
+                        window.videoPlayer.tech(true).off('retry'); // Remove retry handlers
+                        window.videoPlayer.reset();  // Reset the player state
+                        window.videoPlayer.src(''); // Clear source
+                        window.videoPlayer.dispose(); // Dispose the player
+                        window.videoPlayer = null;
+
+                        // Clear the container
+                        const videoContainer = document.getElementById("videoContainer");
+                        if (videoContainer) {
+                            videoContainer.innerHTML = '';
+                        }
+
+                        // Clear any video.js elements from the DOM
+                        const vjsElements = document.querySelectorAll('.vjs-tech, .vjs-poster');
+                        vjsElements.forEach(el => el.remove());
+
+                    } catch (e) {
+                        console.log('Error cleaning up video player:', e);
+                    }
+                }
+            }
+
+            document.querySelectorAll('.close').forEach(function (element) {
+                element.onclick = function () {
+                    const modal = document.getElementById("mediaModal");
+                    cleanupVideoPlayer();
+                    modal.style.display = "none";
+                };
+            });
+
+            window.onclick = function (event) {
+                const modal = document.getElementById("mediaModal");
+                if (event.target == modal) {
+                    cleanupVideoPlayer();
+                    modal.style.display = "none";
+                }
+            };
+
+            document.addEventListener('keydown', function(event) {
+                if (event.key === 'Escape') {
+                    const modal = document.getElementById("mediaModal");
+                    if (modal.style.display === "block") {
+                        cleanupVideoPlayer();
+                        modal.style.display = "none";
+                    }
+                }
+            });
+
+            // Drag and drop functionality
+            function allowDrop(event) {
+                event.preventDefault();
+                const dropTarget = event.target.closest('tr');
+                if (dropTarget && dropTarget.querySelector('.fa-folder')) {
+                    dropTarget.classList.add('drag-over');
+                }
+            }
+
+            function dragLeave(event) {
+                const dropTarget = event.target.closest('tr');
+                if (dropTarget) {
+                    dropTarget.classList.remove('drag-over');
+                }
+            }
+
+            function drag(event) {
+                const row = event.target.closest('tr');
+                if (!row) return;
+
+                const fileCheckbox = row.querySelector('.fileCheckbox');
+                if (!fileCheckbox) return;
+
+                const fileName = fileCheckbox.value;
+                const isFolder = row.querySelector('.fa-folder') !== null;
+
+                event.dataTransfer.setData("application/json", JSON.stringify({
+                    name: fileName,
+                    isFolder: isFolder
+                }));
+            }
+
+            function drop(event) {
+                event.preventDefault();
+                const dropTarget = event.target.closest('tr');
+                if (!dropTarget) return;
+
+                dropTarget.classList.remove('drag-over');
+
+                // Only allow dropping into folders
+                const targetFolder = dropTarget.querySelector('.fa-folder');
+                if (!targetFolder) {
+                    console.log('Can only drop into folders');
+                    return;
+                }
+
+                try {
+                    const dragData = JSON.parse(event.dataTransfer.getData("application/json"));
+                    const targetCheckbox = dropTarget.querySelector('.fileCheckbox');
+
+                    if (!targetCheckbox || !dragData.name) return;
+
+                    const targetPath = targetCheckbox.value;
+                    if (dragData.name === targetPath) return; // Prevent dropping onto itself
+
+                    // Get the current directory from the hidden input
+                    const currentDir = document.getElementById('currentDirectory').value;
+
+                    console.log('Moving file:', {
+                        src: dragData.name,
+                        dst: targetPath,
+                        dir: currentDir,
+                        isFolder: dragData.isFolder
+                    });
+
+                    secureFetch('/move', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            src: dragData.name,
+                            dst: targetPath,
+                            dir: currentDir,
+                            isFolder: dragData.isFolder
+                        })
+                    })
+                        .then(response => response.json())
+                        .then(data => {
+                            console.log('Move successful:', data);
+                            location.reload();
+                        })
+                        .catch(error => {
+                            console.error('Move failed:', error);
+                            alert('Failed to move: ' + error.message);
+                        });
+                } catch (error) {
+                    console.error('Drop handling error:', error);
+                }
+            }
+
+            // Remove existing event listeners first
+            document.querySelectorAll('tr[draggable="true"]').forEach(row => {
+                row.removeEventListener('dragstart', drag);
+                row.removeEventListener('dragover', allowDrop);
+                row.removeEventListener('dragleave', dragLeave);
+                row.removeEventListener('drop', drop);
+            });
+
+            // Add event listeners to all draggable rows
+            document.querySelectorAll('tr[draggable="true"]').forEach(row => {
+                row.addEventListener('dragstart', drag);
+                row.addEventListener('dragover', allowDrop);
+                row.addEventListener('dragleave', dragLeave);
+                row.addEventListener('drop', drop);
+
+                // Prevent drag on checkbox and links
+                row.querySelectorAll('input[type="checkbox"], a').forEach(element => {
+                    element.addEventListener('mousedown', e => {
+                        e.stopPropagation();
+                    });
+                });
+            });
+
+            // Make sure folder links still work when not dragging
+            document.querySelectorAll('a[href^="' + getFullPath('/?dir=') + '"]').forEach(link => {
+                link.addEventListener('click', function (event) {
+                    if (!event.target.closest('tr').dragging) {
+                        event.preventDefault();
+                        const href = this.getAttribute('href');
+                        window.location.href = href;
+                    }
+                });
+            });
+
+            // Add chmod button handler
+            const chmodBtn = document.getElementById('chmodBtn');
+            if (chmodBtn) {
+                chmodBtn.addEventListener('click', function (event) {
+                    const selectedFiles = document.querySelectorAll('.fileCheckbox:checked');
+                    if (selectedFiles.length !== 1) {
+                        alert('Please select a single file to change permissions.');
+                        return;
+                    }
+
+                    const selectedFile = selectedFiles[0].value;
+                    const modeInput = document.getElementById('chmodMode');
+                    const mode = modeInput.value.trim();
+
+                    if (!mode.match(/^[0-7]{3,4}$/)) {
+                        alert('Please enter a valid mode (e.g., 0755)');
+                        return;
+                    }
+
+                    secureFetch('/chmod', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            file: selectedFile,
+                            mode: mode
+                        })
+                    })
+                        .then(response => {
+                            if (response.ok) {
+                                location.reload();
+                            } else {
+                                return response.text().then(text => {
+                                    throw new Error(text);
+                                });
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Chmod failed:', error);
+                            alert('Failed to change permissions: ' + error.message);
+                        });
+                });
+            }
+
+            // Add timeout for modal
+            let modalTimeout;
+            function closeModalAfterTimeout() {
+                const modal = document.getElementById("mediaModal");
+                if (modal) {
+                    modalTimeout = setTimeout(() => {
+                        modal.style.display = "none";
+                        const videoPreview = document.getElementById("videoPreview");
+                        if (videoPreview) {
+                            videoPreview.pause();
+                            videoPreview.currentTime = 0;
+                        }
+                    }, 3600000); // 1 hour timeout
+                }
+            }
+
+            // Clear timeout when user interacts
+            function resetModalTimeout() {
+                clearTimeout(modalTimeout);
+                closeModalAfterTimeout();
+            }
+
+            // Add event listeners for modal timeout
+            const modal = document.getElementById("mediaModal");
+            if (modal) {
+                modal.addEventListener('mousemove', resetModalTimeout);
+                modal.addEventListener('keypress', resetModalTimeout);
+            }
+
+            // Update all fetch calls to use getFullPath
+            async function secureFetch(url, options = {}) {
+                const fullUrl = getFullPath(url);
+                const defaultHeaders = {
+                    'X-CSRF-Token': csrfToken,
+                    'X-Requested-With': 'XMLHttpRequest'
+                };
+
+                // Don't add Content-Type for FormData
+                if (!(options.body instanceof FormData)) {
+                    defaultHeaders['Content-Type'] = 'application/json';
+                }
+
+                const secureOptions = {
+                    ...options,
+                    headers: {
+                        ...defaultHeaders,
+                        ...options.headers
+                    },
+                    credentials: 'same-origin'
+                };
+
+                try {
+                    const response = await fetch(fullUrl, secureOptions);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response;
+                } catch (error) {
+                    console.error('Fetch error:', error);
+                    throw error;
+                }
+            }
+
+            // Update all href attributes
+            document.querySelectorAll('a[href^="/"]').forEach(link => {
+                const href = link.getAttribute('href');
+                link.setAttribute('href', getFullPath(href));
+            });
+
+            // Update media source paths
+            document.querySelectorAll('.media-link').forEach(element => {
+                const mediaSrc = element.getAttribute('data-media-src');
+                element.setAttribute('data-media-src', getFullPath(mediaSrc));
+            });
+
+            // Update form actions
+            document.querySelectorAll('form').forEach(form => {
+                const action = form.getAttribute('action');
+                if (action && action.startsWith('/')) {
+                    form.setAttribute('action', getFullPath(action));
+                }
+            });
+
+            // Update static resource paths
+            document.querySelectorAll('link[href^="/static"]').forEach(link => {
+                const href = link.getAttribute('href');
+                link.setAttribute('href', getFullPath(href));
+            });
+
+            // Update folder navigation
+            document.addEventListener('DOMContentLoaded', function () {
+                // Handle folder links
+                document.querySelectorAll('.folder-link').forEach(link => {
+                    link.addEventListener('click', function (event) {
+                        event.preventDefault();
+                        const path = this.getAttribute('data-path');
+                        const prefix = document.getElementById('prefixPath').value || '';
+
+                        console.log('Folder navigation:', {
+                            path: path,
+                            prefix: prefix
+                        });
+
+                        // Construct the URL properly
+                        const url = prefix + '/?dir=' + encodeURIComponent(path);
+                        console.log('Navigation URL:', url);
+                        window.location.href = url;
+                    });
+                });
+            });
+
+            // Remove any duplicate event listeners
+            const oldScript = document.querySelector('script[data-folder-navigation]');
+            if (oldScript) {
+                oldScript.remove();
+            }
+
+            // Back button handler
+            const backButton = document.querySelector('.back-button');
+            if (backButton) {
+                backButton.addEventListener('click', function (event) {
+                    event.preventDefault();
+                    const path = this.getAttribute('data-path');
+                    const prefix = document.getElementById('prefixPath').value || '';
+
+                    console.log('Back navigation:', {
+                        path: path,
+                        prefix: prefix
+                    });
+
+                    // Construct the URL properly
+                    const url = prefix + '/?dir=' + encodeURIComponent(path);
+                    console.log('Back URL:', url);
+                    window.location.href = url;
+                });
+            }
+
+            // Add debounce function
+            function debounce(func, wait) {
+                let timeout;
+                return function executedFunction(...args) {
+                    const later = () => {
+                        clearTimeout(timeout);
+                        func(...args);
+                    };
+                    clearTimeout(timeout);
+                    timeout = setTimeout(later, wait);
+                };
+            }
+
+            // Add search functionality
+            const searchInput = document.getElementById('searchInput');
+            if (searchInput) {
+                const performSearch = debounce((query) => {
+                    const prefix = document.getElementById('prefixPath').value || '';
+                    const currentDir = document.querySelector('input[name="dir"]').value;
+                    const url = prefix + '/?' + new URLSearchParams({
+                        dir: currentDir,
+                        search: query
+                    }).toString();
+
+                    // Only reload if query is empty or has content
+                    if (query === '' || query.length >= 1) {
+                        window.location.href = url;
+                    }
+                }, 500); // 500ms delay
+
+                searchInput.addEventListener('input', function (event) {
+                    const query = event.target.value.trim();
+                    performSearch(query);
+                });
+            }
+
+            // Add home link handler
+            const homeLink = document.querySelector('.home-link');
+            if (homeLink) {
+                homeLink.addEventListener('click', function (event) {
+                    event.preventDefault();
+                    const prefix = document.getElementById('prefixPath').value || '';
+                    window.location.href = prefix + '/';
+                });
+            }
+
+            // Filter functions
+            function filterFiles() {
+                const extensionFilter = document.getElementById('extensionFilter').value;
+                const dateFilter = document.getElementById('dateFilter').value;
+                const rows = document.querySelectorAll('#fileTable tbody tr');
+
+                rows.forEach(row => {
+                    const extension = row.querySelector('td:nth-child(6)').textContent.toLowerCase();
+                    const lastModified = new Date(row.querySelector('td:last-child').textContent);
+                    const isFolder = extension === 'folder';
+
+                    let showByExtension = true;
+                    let showByDate = true;
+
+                    if (extensionFilter) {
+                        showByExtension = (extensionFilter === 'folder' && isFolder) ||
+                            (extensionFilter === extension && !isFolder);
+                    }
+
+                    if (dateFilter) {
+                        const now = new Date();
+                        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                        const yesterday = new Date(today);
+                        yesterday.setDate(yesterday.getDate() - 1);
+                        const lastWeek = new Date(today);
+                        lastWeek.setDate(lastWeek.getDate() - 7);
+                        const lastMonth = new Date(today);
+                        lastMonth.setMonth(lastMonth.getMonth() - 1);
+
+                        switch (dateFilter) {
+                            case 'today':
+                                showByDate = lastModified >= today;
+                                break;
+                            case 'yesterday':
+                                showByDate = lastModified >= yesterday && lastModified < today;
+                                break;
+                            case 'week':
+                                showByDate = lastModified >= lastWeek;
+                                break;
+                            case 'month':
+                                showByDate = lastModified >= lastMonth;
+                                break;
+                        }
+                    }
+
+                    row.style.display = showByExtension && showByDate ? '' : 'none';
+                });
+
+                currentPage = 1;
+                updatePagination();
+            }
+
+            // Add event listeners to filters
+            document.getElementById('extensionFilter').addEventListener('change', filterFiles);
+            document.getElementById('dateFilter').addEventListener('change', filterFiles);
+
+            // Populate extension filter with unique extensions from the table
+            function populateExtensionFilter() {
+                const extensionFilter = document.getElementById('extensionFilter');
+                const extensions = new Set();
+
+                // Always add default options
+                extensions.add('folder');
+
+                // Get all unique extensions from the table
+                document.querySelectorAll('#fileTable tbody tr').forEach(row => {
+                    const extension = row.querySelector('td:nth-child(6)').textContent.toLowerCase();
+                    if (extension !== 'folder') {
+                        extensions.add(extension);
+                    }
+                });
+
+                // Sort extensions
+                const sortedExtensions = Array.from(extensions).sort();
+
+                // Clear existing options except the first one (All Extensions)
+                while (extensionFilter.options.length > 1) {
+                    extensionFilter.remove(1);
+                }
+
+                // Add options
+                sortedExtensions.forEach(ext => {
+                    const option = new Option(ext.toUpperCase(), ext);
+                    extensionFilter.add(option);
+                });
+            }
+
+            // Call on page load
+            document.addEventListener('DOMContentLoaded', function () {
+                populateExtensionFilter();
+            });
+
+            // Pagination variables
+            let currentPage = 1;
+            let itemsPerPage = 10;
+            let totalItems = 0;
+
+            // Initialize pagination
+            function initPagination() {
+                const rows = document.querySelectorAll('#fileTable tbody tr');
+                totalItems = rows.length;
+                document.getElementById('totalItems').textContent = totalItems;
+                updatePagination();
+            }
+
+            // Update pagination display
+            function updatePagination() {
+                const visibleRows = Array.from(document.querySelectorAll('#fileTable tbody tr')).filter(row => {
+                    return window.getComputedStyle(row).display !== 'none';
+                });
+
+                totalItems = visibleRows.length;
+                const startItem = (currentPage - 1) * itemsPerPage;
+                const endItem = Math.min(startItem + itemsPerPage, totalItems);
+
+                document.getElementById('startItem').textContent = totalItems > 0 ? startItem + 1 : 0;
+                document.getElementById('endItem').textContent = endItem;
+                document.getElementById('totalItems').textContent = totalItems;
+
+                // Show/hide rows based on current page
+                visibleRows.forEach((row, index) => {
+                    if (index >= startItem && index < endItem) {
+                        row.style.display = '';
+                    } else {
+                        row.style.display = 'none';
+                    }
+                });
+
+                // Update button states
+                document.getElementById('prevPage').parentElement.classList.toggle('disabled', currentPage === 1);
+                document.getElementById('nextPage').parentElement.classList.toggle('disabled', endItem >= totalItems);
+
+                // Update file stats after pagination
+                updateFileStats();
+            }
+
+            // Add event listeners for pagination
+            document.getElementById('prevPage').addEventListener('click', function (e) {
+                e.preventDefault();
+                if (currentPage > 1) {
+                    currentPage--;
+                    updatePagination();
+                }
+            });
+
+            document.getElementById('nextPage').addEventListener('click', function (e) {
+                e.preventDefault();
+                if (currentPage * itemsPerPage < totalItems) {
+                    currentPage++;
+                    updatePagination();
+                }
+            });
+
+            document.getElementById('itemsPerPage').addEventListener('change', function () {
+                itemsPerPage = parseInt(this.value);
+                currentPage = 1;
+                updatePagination();
+            });
+
+            // Initialize pagination on page load
+            document.addEventListener('DOMContentLoaded', function () {
+                initPagination();
+                updateFileStats();
+            });
+
+            // Function to format file size
+            function formatFileSize(bytes) {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+
+            // Function to update file statistics
+            function updateFileStats() {
+                const visibleRows = Array.from(document.querySelectorAll('#fileTable tbody tr')).filter(row => {
+                    return window.getComputedStyle(row).display !== 'none';
+                });
+
+                let fileCount = 0;
+                let folderCount = 0;
+                let totalSize = 0;
+
+                visibleRows.forEach(row => {
+                    const isFolder = row.querySelector('td:nth-child(6)').textContent === 'folder';
+                    const size = parseInt(row.getAttribute('data-size')) || 0;
+
+                    if (isFolder) {
+                        folderCount++;
+                    } else {
+                        fileCount++;
+                        totalSize += size;
+                    }
+                });
+
+                document.getElementById('totalFiles').textContent = `Files: ${fileCount}`;
+                document.getElementById('totalFolders').textContent = `Folders: ${folderCount}`;
+                document.getElementById('totalSize').textContent = `Total Size: ${formatFileSize(totalSize)}`;
+            }
+
+            // Update stats when page loads and after filtering
+            document.addEventListener('DOMContentLoaded', updateFileStats);
+            document.getElementById('extensionFilter').addEventListener('change', updateFileStats);
+            document.getElementById('dateFilter').addEventListener('change', updateFileStats);
+
+            // Add this code in your DOMContentLoaded event listener
+            const uploadFile = document.getElementById('uploadFile');
+            const uploadLabel = document.querySelector('label[for="uploadFile"]');
+            const originalLabelText = uploadLabel.textContent;
+
+            uploadFile.addEventListener('change', function(e) {
+                const fileCount = this.files.length;
+                if (fileCount > 0) {
+                    uploadLabel.innerHTML = `<i class="fas fa-check"></i> ${fileCount} ${fileCount === 1 ? 'file' : 'files'} selected`;
+                    uploadLabel.classList.remove('btn-outline-secondary');
+                    uploadLabel.classList.add('btn-success');
+                } else {
+                    uploadLabel.innerHTML = originalLabelText;
+                    uploadLabel.classList.remove('btn-success');
+                    uploadLabel.classList.add('btn-outline-secondary');
+                }
+            });
+        });
+    </script>
+    <style>
+        :root {
+            --primary-color: #219ebc;
+            --secondary-color: #023047;
+            --accent-color: #ffb703;
+            --light-color: #8ecae6;
+            --warning-color: #fb8500;
+            --danger-color: #e63946;
+            --background-color: #f8f9fa;
+            --text-color: #023047;
+        }
+
+        /* Button styling */
+        .btn {
+            min-width: 120px;
+            padding: 8px 16px;
+            margin: 0 4px;
+            border-radius: 4px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+        }
+
+        .btn i {
+            margin-right: 8px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Button colors */
+        .btn-primary {
+            background-color: var(--primary-color);
+            border-color: var(--primary-color);
+        }
+
+        .btn-danger {
+            background-color: var(--danger-color);
+            border-color: var(--danger-color);
+        }
+
+        .btn-warning {
+            background-color: var(--warning-color);
+            border-color: var(--warning-color);
+            color: white;
+        }
+
+        .btn-info {
+            background-color: var(--light-color);
+            border-color: var(--light-color);
+        }
+
+        .btn-dark {
+            background-color: var(--secondary-color);
+            border-color: var(--secondary-color);
+        }
+
+        .btn-success {
+            background-color: var(--accent-color);
+            border-color: var(--accent-color);
+            color: var(--secondary-color);
+        }
+
+        /* Input styling */
+        .form-control {
+            border-color: var(--primary-color);
+            border-radius: 4px;
+        }
+
+        .form-control:focus {
+            border-color: var(--light-color);
+            box-shadow: 0 0 0 0.2rem rgba(33, 158, 188, 0.25);
+        }
+
+        /* Table styling */
+        #fileTable {
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        #fileTable thead th {
+            background-color: var(--primary-color);
+            color: white;
+            border-bottom: 2px solid var(--secondary-color);
+            padding: 12px;
+        }
+
+        #fileTable tbody tr {
+            transition: background-color 0.3s ease;
+        }
+
+        #fileTable tbody tr:hover {
+            background-color: rgba(33, 158, 188, 0.1);
+        }
+
+        /* Filter and pagination styling */
+        .filters select {
+            border-color: var(--primary-color);
+            color: var(--text-color);
+        }
+
+        .pagination .page-link {
+            color: var(--primary-color);
+            border-color: var(--primary-color);
+        }
+
+        .pagination .page-link:hover {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .pagination .disabled .page-link {
+            color: #6c757d;
+            border-color: #dee2e6;
+        }
+
+        /* Badge styling */
+        .badge {
+            padding: 8px 12px;
+            border-radius: 4px;
+        }
+
+        .badge-primary {
+            background-color: var(--primary-color);
+        }
+
+        .badge-info {
+            background-color: var(--light-color);
+        }
+
+        .badge-secondary {
+            background-color: var(--secondary-color);
+        }
+
+        /* Modal styling */
+        .modal-content {
+            background-color: var(--background-color);
+            border-radius: 8px;
+        }
+
+        .close {
+            color: var(--text-color);
+        }
+
+        /* Breadcrumb styling */
+        .breadcrumb {
+            background-color: rgba(33, 158, 188, 0.1);
+            border-radius: 4px;
+        }
+
+        .breadcrumb-item a {
+            color: var(--primary-color);
+        }
+
+        /* Button group spacing */
+        .btn-group {
+            gap: 4px;
+        }
+
+        .btn-group .btn {
+            margin: 0;
+        }
+
+        /* Chmod input styling */
+        #chmodMode {
+            width: 80px;
+            text-align: center;
+            margin-right: 4px;
+        }
+
+        /* Action bar layout */
+        .action-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        /* Filters styling */
+        .filters-container {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .filters-group {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .filters-group select {
+            min-width: 120px;
+            height: 38px;
+        }
+
+        /* Action buttons styling */
+        .action-buttons {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .action-btn {
+            width: 120px;
+            height: 38px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem 1rem;
+            font-size: 0.9rem;
+            white-space: nowrap;
+        }
+
+        .action-btn i {
+            margin-right: 0.5rem;
+        }
+
+        /* Chmod group styling */
+        .chmod-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .chmod-group input {
+            width: 80px;
+            height: 38px;
+            text-align: center;
+        }
+
+        /* File stats styling */
+        .file-stats {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .file-stats .badge {
+            font-size: 0.9rem;
+            padding: 0.5rem 0.75rem;
+        }
+
+        /* Button colors from the color scheme */
+        .btn-primary {
+            background-color: var(--primary-color);
+            border-color: var(--primary-color);
+        }
+
+        .btn-danger {
+            background-color: var(--danger-color);
+            border-color: var(--danger-color);
+        }
+
+        .btn-warning {
+            background-color: var(--warning-color);
+            border-color: var(--warning-color);
+            color: white;
+        }
+
+        .btn-info {
+            background-color: var(--light-color);
+            border-color: var(--light-color);
+        }
+
+        .btn-dark {
+            background-color: var(--secondary-color);
+            border-color: var(--secondary-color);
+        }
+
+        /* Top section styling */
+        .form-inline {
+            display: flex;
+            align-items: center;
+        }
+
+        .form-inline .form-control {
+            min-width: 200px;
+        }
+
+        .form-inline .btn {
+            margin-left: 8px;
+        }
+
+        #uploadForm .btn,
+        #createForm .btn {
+            min-width: 120px;
+            height: 38px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #uploadForm input[type="text"],
+        #createForm input[type="text"] {
+            min-width: 200px;
+        }
+
+        /* Button colors from the color scheme */
+        .btn-success {
+            background-color: var(--accent-color);
+            border-color: var(--accent-color);
+            color: var(--secondary-color);
+        }
+
+        .btn-info {
+            background-color: var(--light-color);
+            border-color: var(--light-color);
+        }
+
+        .btn-outline-secondary {
+            border-color: var(--secondary-color);
+            color: var(--secondary-color);
+        }
+
+        .btn-outline-secondary:hover {
+            background-color: var(--secondary-color);
+            color: white;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: rgba(0, 0, 0, 0.9);
+        }
+
+        .modal-content {
+            position: relative;
+            margin: auto;
+            padding: 20px;
+            width: 95%;
+            max-width: 1400px;
+            height: 90vh;
+            top: 50%;
+            transform: translateY(-50%);
+            background-color: transparent;
+        }
+
+        #mediaContainer {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        #videoContainer {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        #videoPreview {
+            width: 100%;
+            height: 100%;
+            max-width: 100%;
+            max-height: 90vh;
+            object-fit: contain;
+            background: black;
+        }
+
+        video.video-js {
+            width: 100% !important;
+            height: 100% !important;
+            max-width: 100%;
+            max-height: 90vh;
+            margin: auto;
+        }
+
+        #imagePreview {
+            max-width: 100%;
+            max-height: 90vh;
+            object-fit: contain;
+        }
+
+        .close {
+            position: absolute;
+            right: 10px;
+            top: 10px;
+            color: #fff;
+            font-size: 35px;
+            font-weight: bold;
+            cursor: pointer;
+            z-index: 1001;
+        }
+
+        /* Loading spinner */
+        .loading-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid var(--primary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            color: white;
+            margin-top: 10px;
+            font-size: 1.2em;
+        }
+
+        .loading-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+    </style>
+    <!-- Loading overlay -->
+    <div class="loading-overlay">
+        <div class="loading-container">
+            <div class="spinner"></div>
+            <div class="loading-text">Processing...</div>
+        </div>
+    </div>
+</body>
+
+</html>
